@@ -16,7 +16,10 @@ BOT_TOKEN = "8310201354:AAH_MIyv9q_YRpPbCoAbkS39oCb8UGRyzNg"
 CHANNEL_ID = "@anonalmet" 
 ADMIN_IDS = [6970104969]  
 
-SPAM_COOLDOWN = 60  
+# Настройки спама (разные для обычных и премиум пользователей)
+DEFAULT_SPAM_COOLDOWN = 60  # 60 секунд для обычных пользователей
+PREMIUM_SPAM_COOLDOWN = 3   # 3 секунды для премиум пользователей (почти нет спам-режима)
+
 PREMIUM_PRICE = 25  # 25 Stars за 1 месяц премиума
 
 
@@ -544,10 +547,17 @@ def check_spam_cooldown(user_id: int) -> Optional[str]:
     
     if user_id in user_cooldowns:
         last_time = user_cooldowns[user_id]
+        
+        # Определяем время ожидания в зависимости от статуса пользователя
+        if db.is_user_premium(user_id):
+            cooldown = PREMIUM_SPAM_COOLDOWN
+        else:
+            cooldown = DEFAULT_SPAM_COOLDOWN
+        
         time_diff = (now - last_time).total_seconds()
         
-        if time_diff < SPAM_COOLDOWN:
-            wait_time = int(SPAM_COOLDOWN - time_diff)
+        if time_diff < cooldown:
+            wait_time = int(cooldown - time_diff)
             return f"⏳ Подождите {wait_time} секунд перед отправкой следующего сообщения."
     
     user_cooldowns[user_id] = now
@@ -1491,13 +1501,14 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await delete_select_callback(update, context)
         return
     
-    # Обработка покупки премиума
-    elif data == "test_premium":
-        await test_premium_callback(update, context)
+    # Обработка покупки премиума через Stars
+    elif data == "buy_premium_stars":
+        await buy_premium_stars_callback(update, context)
         return
     
-    elif data == "stars_payment":
-        await stars_payment_callback(update, context)
+    # Обработка тестового премиума (для отладки)
+    elif data == "test_premium":
+        await test_premium_callback(update, context)
         return
     
     # Обработка других кнопок
@@ -1774,7 +1785,7 @@ async def test_premium_callback(update: Update, context: ContextTypes.DEFAULT_TY
     
     await safe_edit_message_text(query, text, parse_mode=ParseMode.MARKDOWN_V2)
 
-async def stars_payment_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def buy_premium_stars_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Колбэк для оплаты через Stars"""
     query = update.callback_query
     await query.answer()
@@ -1790,21 +1801,35 @@ async def stars_payment_callback(update: Update, context: ContextTypes.DEFAULT_T
         )
         return
     
-    text = (
-        f"💰 *Оплата через Telegram Stars*\n\n"
-        f"Для оплата премиум подписки:\n\n"
-        f"1\\. Убедитесь\\, что у вас есть {PREMIUM_PRICE} звезд ⭐\n"
-        f"2\\. Используйте команду `/buy\\_premium`\n"
-        f"3\\. Подтвердите оплату\n\n"
-        f"*Стоимость:* {PREMIUM_PRICE} звезд за 1 месяц\n\n"
-        f"*Как получить звезды:*\n"
-        f"• Открывайте подарки от других пользователей\n"
-        f"• Получайте звёзды за активность\n"
-        f"• Покупайте звёзды в настройках Telegram\n\n"
-        f"*Поддержка:* @anonaltshelper"
-    )
-    
-    await safe_edit_message_text(query, text, parse_mode=ParseMode.MARKDOWN_V2)
+    # Создаем инвойс для оплаты через Stars
+    try:
+        # Уникальный payload для идентификации платежа
+        payload = f"premium_1month_{user.id}"
+        
+        # Отправляем инвойс
+        await context.bot.send_invoice(
+            chat_id=user.id,
+            title="Anon Premium - 1 месяц",
+            description="Премиум подписка на 1 месяц\n✅ Редактирование сообщений\n✅ Уникальный эмодзи\n✅ Без спам-режима",
+            payload=payload,
+            provider_token="",  # Для Stars оставляем пустым
+            currency="XTR",  # Telegram Stars
+            prices=[LabeledPrice(label="Premium (1 месяц)", amount=PREMIUM_PRICE)],
+            start_parameter="anon_premium",
+            need_email=False,
+            need_phone_number=False,
+            need_shipping_address=False,
+            is_flexible=False,
+            protect_content=True
+        )
+        
+    except Exception as e:
+        logger.error(f"Ошибка при создании инвойса: {e}")
+        await safe_edit_message_text(
+            query,
+            "❌ Произошла ошибка при создании платежа\\. Попробуйте позже\\.",
+            parse_mode=ParseMode.MARKDOWN_V2
+        )
 
 async def delete_confirm_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Подтверждение удаления сообщения"""
@@ -2471,6 +2496,7 @@ async def myemoji_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"🎨 *Ваш эмодзи*\n\n"
             f"Текущий эмодзи: {current_emoji}\n"
             f"Статус: ✅ Premium активен\n"
+            f"Спам\\-режим: 🔓 *ОТКЛЮЧЕН*\n"
         )
         
         if reserved_emoji:
@@ -2497,20 +2523,22 @@ async def myemoji_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = (
             f"🎨 *Ваш эмодзи*\n\n"
             f"Текущий эмодзи: {current_emoji}\n"
-            f"Статус: ❌ Premium не активен\n\n"
+            f"Статус: ❌ Premium не активен\n"
+            f"Спам\\-режим: ⏳ *{DEFAULT_SPAM_COOLDOWN} секунд*\n\n"
             f"*Получить премиум:*\n"
             f"`/premium` \\- узнать о премиуме\n"
             f"`/buy\\_premium` \\- купить премиум за {PREMIUM_PRICE}⭐\n\n"
             f"С премиумом вы сможете:\n"
             f"• Редактировать и удалять сообщения ✏️\n"
             f"• Закрепить уникальный эмодзи за собой 🔒\n"
-            f"• Использовать премиум эмодзи Telegram ⭐\n\n"
+            f"• Использовать премиум эмодзи Telegram ⭐\n"
+            f"• 🔓 *ОТКЛЮЧЕНИЕ спам\\-режима*\n\n"
             f"*Поддержка:* @anonaltshelper"
         )
     
     await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN_V2)
 
-# ===================== PREMIUM КОМАНДЫ (ИСПРАВЛЕННЫЕ) =====================
+# ===================== PREMIUM КОМАНДЫ (РЕАЛЬНАЯ ОПЛАТА) =====================
 
 async def buy_premium_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Покупка премиум подписки через Telegram Stars"""
@@ -2530,19 +2558,21 @@ async def buy_premium_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         f"*Включает:*\n"
         f"✅ Редактирование и удаление сообщений ✏️\n"
         f"✅ Уникальный закрепленный эмодзи 🔒\n"
-        f"✅ Премиум эмодзи Telegram ⭐\n\n"
+        f"✅ Премиум эмодзи Telegram ⭐\n"
+        f"✅ 🔓 *Отключение спам\\-режима*\n\n"
         f"*Особенности:*\n"
         f"• Редактируйте отправленные сообщения\n"
         f"• Удаляйте свои сообщения\n"
         f"• Закрепите уникальный эмодзи за собой\n"
-        f"• Используйте премиум эмодзи\n\n"
+        f"• Используйте премиум эмодзи\n"
+        f"• Отправляйте сообщения без ожидания\n\n"
+        f"*Обычный пользователь:* ⏳ {DEFAULT_SPAM_COOLDOWN} секунд ожидания\n"
+        f"*Премиум пользователь:* 🔓 почти нет ограничений \\({PREMIUM_SPAM_COOLDOWN} сек\\)\n\n"
         f"*Поддержка:* @anonaltshelper"
     )
     
-    # Для тестирования показываем кнопку без платежа
     keyboard = [
-        [InlineKeyboardButton(f"✨ Получить Premium за {PREMIUM_PRICE}⭐", callback_data='test_premium')],
-        [InlineKeyboardButton("💰 Купить через Stars", callback_data='stars_payment')],
+        [InlineKeyboardButton(f"💰 Купить за {PREMIUM_PRICE}⭐", callback_data="buy_premium_stars")],
     ]
     
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -2594,6 +2624,23 @@ async def successful_payment_handler(update: Update, context: ContextTypes.DEFAU
         # Активируем премиум
         db.set_user_premium(user.id, months=1, emoji_type="premium")
         
+        # Сохраняем информацию о платеже в базе данных
+        cursor = db.conn.cursor()
+        cursor.execute('''
+            INSERT INTO payments (payment_id, user_id, amount, currency, status, timestamp, product, payload)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (
+            payment.telegram_payment_charge_id,
+            user.id,
+            payment.total_amount,
+            payment.currency,
+            "completed",
+            datetime.now().isoformat(),
+            "premium_1month",
+            payment.invoice_payload
+        ))
+        db.conn.commit()
+        
         # Отправляем поздравление
         text = (
             f"🎉 *Поздравляем\\!*\n\n"
@@ -2601,7 +2648,8 @@ async def successful_payment_handler(update: Update, context: ContextTypes.DEFAU
             f"✨ *Теперь вам доступно:*\n"
             f"• Редактирование и удаление сообщений ✏️\n"
             f"• Уникальный закрепленный эмодзи 🔒\n"
-            f"• Выбор из {len(PREMIUM_EMOJIS)} премиум эмодзи ⭐\n\n"
+            f"• Выбор из {len(PREMIUM_EMOJIS)} премиум эмодзи ⭐\n"
+            f"• 🔓 *ОТКЛЮЧЕНИЕ спам\\-режима*\n\n"
             f"*Как редактировать сообщения:*\n"
             f"1\\. Используйте `/edit ID` для редактирования\n"
             f"2\\. Используйте `/delete ID` для удаления\n\n"
@@ -2609,8 +2657,13 @@ async def successful_payment_handler(update: Update, context: ContextTypes.DEFAU
             f"1\\. Используйте `/availableemojis`\n"
             f"2\\. Выберите свободный эмодзи\n"
             f"3\\. Используйте `/emoji \\[эмодзи\\]`\n\n"
+            f"*Отправка сообщений:*\n"
+            f"🔓 Теперь вы можете отправлять сообщения без долгого ожидания\\!\n"
+            f"Обычные пользователи ждут {DEFAULT_SPAM_COOLDOWN} секунд\\,\n"
+            f"премиум пользователи \\- всего {PREMIUM_SPAM_COOLDOWN} секунды\\!\n\n"
             f"*Посмотреть все функции:*\n"
-            f"Используйте `/premium`"
+            f"Используйте `/premium`\n\n"
+            f"Спасибо за покупку\\! 💫"
         )
         
         await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN_V2)
@@ -2632,11 +2685,12 @@ async def premium_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = (
             f"✨ *Anon Premium*\n\n"
             f"✅ Ваш премиум аккаунт активен\\!\n"
-            f"🎨 Текущий эмодзи: {user_emoji}"
+            f"🎨 Текущий эмодзи: {user_emoji}\n"
+            f"⏱️ Спам\\-режим: 🔓 *ОТКЛЮЧЕН*\n"
         )
         
         if reserved_emoji and reserved_emoji == user_emoji:
-            text += f" 🔒 *Уникальный закрепленный эмодзи*\n\n"
+            text += f"🔒 *Уникальный закрепленный эмодзи*\n\n"
         elif reserved_emoji:
             text += f"\n⚠️ Внимание: Закреплен {reserved_emoji}\\, но используется {user_emoji}\n\n"
         else:
@@ -2647,7 +2701,8 @@ async def premium_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"• Редактирование сообщений ✏️\n"
             f"• Удаление сообщений 🗑️\n"
             f"• Уникальный закрепленный эмодзи 🔒\n"
-            f"• Выбор из {len(PREMIUM_EMOJIS)} премиум эмодзи ⭐\n\n"
+            f"• Выбор из {len(PREMIUM_EMOJIS)} премиум эмодзи ⭐\n"
+            f"• 🔓 Отключение спам\\-режима\n\n"
             f"*Команды:*\n"
             f"`/emoji` \\- закрепить новый эмодзи\n"
             f"`/availableemojis` \\- доступные эмодзи\n"
@@ -2665,19 +2720,23 @@ async def premium_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"✅ Редактирование отправленных сообщений ✏️\n"
             f"✅ Удаление своих сообщений 🗑️\n"
             f"✅ Уникальный закрепленный эмодзи 🔒\n"
-            f"✅ {len(PREMIUM_EMOJIS)} премиум эмодзи Telegram ⭐\n\n"
+            f"✅ {len(PREMIUM_EMOJIS)} премиум эмодзи Telegram ⭐\n"
+            f"✅ 🔓 *Отключение спам\\-режима*\n\n"
             f"*Особенности редактирования:*\n"
             f"• Изменяйте текст отправленных сообщений\n"
             f"• Удаляйте сообщения\\, которые хотите скрыть\n"
             f"• Закрепите уникальный эмодзи за собой\n"
             f"• Используйте премиум эмодзи Telegram\n\n"
+            f"*Отличие от обычных пользователей:*\n"
+            f"👤 *Обычный:* ⏳ {DEFAULT_SPAM_COOLDOWN} сек ожидания\n"
+            f"⭐ *Премиум:* 🔓 {PREMIUM_SPAM_COOLDOWN} сек \\(почти нет ограничений\\)\n\n"
             f"*Стоимость:*\n"
             f"1 месяц \\- {PREMIUM_PRICE} звезд Telegram ⭐\n\n"
             f"*Поддержка:* @anonaltshelper"
         )
         
         keyboard = [
-            [InlineKeyboardButton(f"✨ Получить Premium \\({PREMIUM_PRICE}⭐\\)", callback_data="test_premium")],
+            [InlineKeyboardButton(f"💰 Купить Premium \\({PREMIUM_PRICE}⭐\\)", callback_data="buy_premium_stars")],
         ]
         
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -2696,7 +2755,8 @@ def main():
     print(f"👑 Админ ID: {ADMIN_IDS[0]}")
     print(f"💰 Стоимость премиума: {PREMIUM_PRICE} Stars")
     print(f"🎨 Доступно эмодзи: {len(PREMIUM_EMOJIS)}")
-    print(f"⏱️ Антиспам: {SPAM_COOLDOWN} секунд")
+    print(f"⏱️ Антиспам обычные: {DEFAULT_SPAM_COOLDOWN} секунд")
+    print(f"⏱️ Антиспам премиум: {PREMIUM_SPAM_COOLDOWN} секунды")
     print("=" * 60)
     print("✨ *Премиум функции:*")
     print(f"• {PREMIUM_PRICE} Stars за 1 месяц")
@@ -2704,6 +2764,7 @@ def main():
     print("• Удаление сообщений 🗑️")
     print("• Уникальный закрепленный эмодзи 🔒")
     print("• Премиум эмодзи Telegram ⭐")
+    print("• 🔓 ОТКЛЮЧЕНИЕ спам-режима")
     print("=" * 60)
     print("👑 *Админ команды:*")
     print("• /admin - админ панель")
@@ -2757,7 +2818,7 @@ def main():
         app.add_handler(CommandHandler("delete", delete_message_command))
         app.add_handler(CommandHandler("buy_premium", buy_premium_command))
         
-        # Обработчики платежей
+        # Обработчики платежей через Stars
         app.add_handler(PreCheckoutQueryHandler(pre_checkout_handler))
         app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment_handler))
         
@@ -2776,7 +2837,8 @@ def main():
         print("👑 Используйте /admin для админ панели (только для админов)")
         print("🎨 Используйте /availableemojis для выбора эмодзи")
         print("✏️ Премиум пользователи получают кнопки управления сообщениями")
-        print("💳 Используйте /buy_premium для покупки премиума")
+        print("💳 Используйте /buy_premium для покупки премиума через Stars")
+        print("🔓 Премиум пользователи: почти НЕТ спам-режима!")
         print("📌 Поддержка: @anonaltshelper")
         print("=" * 60)
         
